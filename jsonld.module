@@ -65,7 +65,7 @@ function jsonld_create_script_tag($object) {
         //Load MODS data stream into  a simpleXML object for easy traversal
         $mods = simplexml_load_string($object['MODS']->content);
         // Generate Identifiers
-        $jsonLd['@id'] = $object->id;
+        $jsonLd['@id'] = url("islandora/object/{$object->id}", ['absolute' => TRUE]);
         $jsond_xp_indentifiers = variable_get('islandora_scholar_xpaths_identifiers', '//mods:mods[1]/mods:identifier[@type]');
         $jsond_xp_indentifiers = $mods->xpath($jsond_xp_indentifiers);
         $jsonLd_xp_abstract = variable_get('islandora_scholar_xpaths_abstract', '//mods:mods[1]/mods:abstract');
@@ -116,6 +116,8 @@ function jsonld_create_script_tag($object) {
           else {
             $jsonLd['name'] = $title;
           }
+          // Set headline
+          $jsonLd['headline'] = $jsonLd['name'];
         }
 
         /**
