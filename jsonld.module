@@ -1,0 +1,217 @@
+<?php
+
+/**
+ * Generates a valid JSON-LD object from metadata from the current page
+ *
+ * @param $object Islandora Object
+ *
+ * @return array|bool|false|string
+ */
+function jsonld_create_script_tag($object) {
+  if (!isset($object['MODS']) || !islandora_datastream_access(ISLANDORA_VIEW_OBJECTS, $object['MODS'])) {
+    return FALSE;
+  }
+
+  /**
+   *
+   * Start mapping fields, ultimately we want something along the lines of
+   * {
+   * "@context": "http://schema.org",
+   * "@type": "schema:Thesis",
+   * "schema:identifier": {
+   * "@type": "PropertyValue",
+   * "propertyID": "DOI",
+   * "value": "https://doi.org/10.6092/unibo/amsdottorato/2545"
+   * },
+   * "url": "http://example-repository.edu",
+   * "schema:name": "Example Thesis Title",
+   * "schema:inLanguage": "eng",
+   * "schema:inSupportOf": "Doctor of Philosophy, Information and Computer Sciences",
+   * "schema:author": {
+   * "@type": "schema:Person",
+   * "name": "Last, First",
+   * "givenName": "First",
+   * "familyName": "Last",
+   * "@id": "https://orcid.org/0000-0001-7224-6462"
+   * },
+   * "schema:sourceOrganization": {
+   * "@type": "schema:CollegeOrUniversity",
+   * "schema:name": "College Name"
+   * },
+   * "schema:datePublished": "1991",
+   * "schema:description": "Article abstract"
+   * }
+   */
+  // Automatic creation using third party libraries such as easyRDF (included in D8 is not possible as RDF support is not available until CLAW(
+  $cModel = $object->models[0];
+  $jModel = getSchemaFromCModel($cModel);
+  $jsonLd = [];
+  if ($jModel) {
+    $jsonLd['@context'] = 'http://schema.org';
+    $jsonLd['@type'] = $jModel;
+
+    // Generate image if this one object has any
+    if (isset($object['TN'])) {
+      $resource_url = url("islandora/object/{$object->id}/datastream/TN/view", ['absolute' => TRUE]);
+      $jsonLd['image'] = $resource_url;
+    }
+
+    $mods = NULL;
+    if ($object['MODS'] instanceof DOMNode) {
+      $mods = simplexml_import_dom($object['MODS']);
+    }
+    else {
+      try {
+        //Load MODS data stream into  a simpleXML object for easy traversal
+        $mods = simplexml_load_string($object['MODS']->content);
+        // Generate Identifiers
+        $jsonLd['@id'] = $object->id;
+        $jsond_xp_indentifiers = variable_get('islandora_scholar_xpaths_identifiers', '//mods:mods[1]/mods:identifier[@type]');
+        $jsond_xp_indentifiers = $mods->xpath($jsond_xp_indentifiers);
+        $jsonLd_xp_abstract = variable_get('islandora_scholar_xpaths_abstract', '//mods:mods[1]/mods:abstract');
+        $jsonLd_xp_abstract = $mods->xpath($jsonLd_xp_abstract);
+        $jsonLd['description'] = (!empty($jsonLd_xp_abstract)) ? (string) end($jsonLd_xp_abstract) : '';
+        // Set identifier values
+        foreach ($jsond_xp_indentifiers as $jsond_indentifier) {
+          $attribute_name = $jsond_indentifier->attributes();
+          $jsonLd['identifier'][] = [
+            '@type' => 'PropertyValue',
+            'propertyID' => strval($attribute_name['type']),
+            'value' => strval($jsond_indentifier),
+          ];
+        }
+        $jsonLd['url'] = $GLOBALS['base_root'] . request_uri();
+
+        // Get topics
+        $jsonLd_xp_topics = variable_get('islandora_scholar_xpaths_topics', '//mods:subject');
+        $jsonLd_xp_topics = $mods->xpath($jsonLd_xp_topics);
+        foreach ($jsonLd_xp_topics as $topic) {
+          if (isset($topic->topic) && !empty(strval($topic->topic))) {
+            $jsonLd['keywords'][] = strval($topic->topic);
+          }
+        }
+        // Keywords or tags used to describe this content. Multiple entries in a keywords list are typically delimited by commas.
+        if (!empty($jsonLd['keywords'])) {
+          $jsonLd['keywords'] = implode(",", $jsonLd['keywords']);
+        }
+
+        // Set language
+        // TODO get this from the object or a configration when available
+        $jsonLd['inLanguage'] = "eng";
+        // Set authors for this particular piece of work
+        $jsonLd['sourceOrganization'] = [
+          '@type' => 'CollegeOrUniversity',
+          'name' => variable_get('site_name'),
+        ];
+        // Get title and subtitle
+        $title_results = $mods->xpath(variable_get('islandora_scholar_xpaths_title', '//mods:mods[1]/mods:titleInfo/mods:title'));
+        $title = (string) reset($title_results);
+        $subtitle_results = $mods->xpath(variable_get('islandora_scholar_xpaths_title_sub_title', '//mods:mods[1]/mods:titleInfo/mods:subTitle'));
+        $subtitle = (string) reset($subtitle_results);
+
+        if (!empty($title)) {
+          if (!empty($subtitle)) {
+            $jsonLd['name'] = "{$title}: {$subtitle}";
+          }
+          else {
+            $jsonLd['name'] = $title;
+          }
+        }
+
+        /**
+         * Date in which this particular publication was published
+         *
+         * @see islandora_google_scholar:islandora_google_scholar_create_meta_tags
+         **/
+        $tags = islandora_google_scholar_create_meta_tags($object);
+        if ($tags) {
+          $jsonLd['datePublished'] = $tags['citation_publication_date'];
+
+          foreach ($tags['citation_author'] as $author) {
+            $author_parts = explode(', ', $author);
+            $jsonLd['author'][] = [
+              'name' => $author,
+              'givenName' => (isset($author_parts[1]) ? $author_parts[1] : ''),
+              'familyName' => (isset($author_parts[0]) ? $author_parts[0] : ''),
+              '@type' => 'Person',
+            ];
+          }
+        }
+
+        return json_encode($jsonLd, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK);
+      } catch (Exception $e) {
+        watchdog('jsond', 'Got exception while parsing.  Message: !msg Errors: !error', [
+          '!msg' => $e->getMessage(),
+          '!error' => libxml_get_errors(),
+        ]);
+        return [];
+      }
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * Maps Islandora entities/models
+ *
+ * @param $model
+ *
+ * @return bool|mixed
+ */
+function getSchemaFromCModel($model) {
+  $mapping = [
+    'ir:thesisCModel' => 'Thesis',
+    'ir:citationCModel' => 'ScholarlyArticle',
+    'islandora:sp_basic_image' => 'ImageObject',
+    'islandora:sp_large_image_cmodel' => 'ImageObject',
+    'islandora:sp_pdf' => 'DigitalDocument',
+    'islandora:sp-audioCModel' => 'AudioObject',
+    'islandora:sp_videoCModel' => 'VideoObject',
+    'islandora:bookCModel' => 'Book',
+    'islandora:newspaperCModel' => 'Newspaper',
+    'islandora:eventCModel' => 'Event',
+    'islandora:placeCModel' => 'Place',
+    'islandora:personCModel' => 'Person',
+    'islandora:organizationCModel' => 'CollegeorUniversity',
+    'islandora:sp_disk_image' => 'Dataset',
+    'islandora:sp_web_archive' => 'WebPage',
+  ];
+
+  if (isset($mapping[$model])) {
+    return $mapping[$model];
+  }
+  else {
+    return FALSE;
+  }
+}
+
+/**
+ * Add JSON-LD scripts to pages
+ *
+ * @param $_script
+ */
+function jsonld_embed_scripts($_script) {
+  // Get islandora mappings
+  module_load_include('inc', 'islandora', 'includes/mimetype.utils');
+  $mimetype = islandora_mime_mapping();
+  // Generate script to hold the JSON data
+  $script = [
+    '#tag' => 'script',
+    '#attributes' => [
+      'type' => $mimetype['jsonld'],
+    ],
+    '#value' => $_script,
+  ];
+  drupal_add_html_head($script, 'script');
+}
+
+/**
+ * Implements hook_CMODEL_islandora_view_object().
+ */
+function jsonld_islandora_view_object($object) {
+  $tags = jsonld_create_script_tag($object);
+  // Only display JSON-D metadata if the user has a valid data stream and the user has the right permissions
+  if ($tags) {
+    jsonld_embed_scripts($tags);
+  }
+}
