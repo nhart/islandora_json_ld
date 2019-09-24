@@ -42,7 +42,6 @@ This module requires the following modules/libraries:
 
 * [Islandora](https://github.com/islandora/islandora)
 * [Islandora Scholar](https://github.com/islandora/islandora_scholar)
-* [Islandora Google Scholar](https://github.com/Born-Digital-US/islandora_scholar/tree/7.x/modules/islandora_google_scholar)
 * [Islandora Solr](https://github.com/Islandora/islandora_solr_search)
 * [Citeproc](https://github.com/Islandora/islandora_scholar/tree/7.x/modules/citeproc)
 * [CSL](https://github.com/Islandora/islandora_scholar/tree/7.x/modules/csl)
